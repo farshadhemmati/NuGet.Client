@@ -2,46 +2,55 @@ name: $(rev:rr)
 phases:
 
 - phase: NuGet_Client_Product_Construction
+  variables:
+  # DotNet-Blob-Feed provides: dotnetfeed-storage-access-key-1
+  # Publish-Build-Assets provides: MaestroAccessToken
+  - group: DotNet-Blob-Feed
+  - group: Publish-Build-Assets
   queue:
     name: VSEng-MicroBuildVS2017
     timeoutInMinutes: 30
     demands: 
       - DotNetFramework
       - msbuild
-  
+
   steps:
 
   - task: PowerShell@1
     inputs:
       scriptName: "$(Build.Repository.LocalPath)\\configure.ps1"
-      arguments: "-Force -CI"
+      arguments: "-Force"
     displayName: "Run Configure.ps1"
 
   - task: PowerShell@1
     displayName: "Find NuGet.Client Build"
     inputs:
       scriptType: "inlineScript"
-      arguments: "-PersonalAccessToken $(VstsPersonalAccessToken) -RootUrl $(VstsRestApiRootUrl) -DefinitionId $(NuGetClientDefinitionId)"
+      arguments: "-personalAccessToken $(VstsPersonalAccessToken)"
       inlineScript: |
-        Param([string]$PersonalAccessToken, [string]$RootUrl, [string]$DefinitionId)
-        $branchName = $env:NUGET_CLIENT_BRANCH
-        $buildNumber = $env:NUGET_CLIENT_BUILD_NUMBER
-        $url = '{0}/build/builds?definitions={1}&statusFilter=completed&resultFilter=succeeded,partiallySucceeded&$top=1&tagFilters={2}&buildNumber={3}&api-version=2.0' -f $RootUrl, $definitionId, $branchName, $buildNumber
-        $Base64Token = [System.Convert]::ToBase64String([char[]]":$PersonalAccessToken")
-        $Headers = @{ Authorization = 'Basic {0}' -f $Base64Token; }        
-        $builds = Invoke-RestMethod -Uri $url -Method GET -Headers $Headers
+        Param([string] $personalAccessToken)
+        $rootUrl = $Env:VstsRestApiRootUrl
+        $buildDefinitionId = $Env:NuGetClientDefinitionId
+        $branchName = $Env:NuGetClientBranchName
+        $url = '{0}/build/builds?definitions={1}&statusFilter=completed&resultFilter=succeeded,partiallySucceeded&$top=1&tagFilters={2}&api-version=2.0' -f $rootUrl, $buildDefinitionId, $branchName
+        $base64Token = [System.Convert]::ToBase64String([char[]]":$personalAccessToken")
+        $headers = @{ Authorization = 'Basic {0}' -f $base64Token; }
+        $builds = Invoke-RestMethod -Uri $url -Method GET -Headers $headers
         $desiredBuild =  $builds.value
         Write-Host $desiredBuild
         $sourceVersion = $desiredBuild.sourceVersion
         $buildNumber = $desiredBuild.buildNumber
-        $NupkgDirectory = "$env:DropRoot\$branchName\$buildNumber\artifacts\VS15\Nupkgs\"
-        Write-Host "##vso[task.setvariable variable=NUGET_CLIENT_BUILD_NUMBER]$buildNumber"
-        Write-Host "##vso[task.setvariable variable=NUGET_CLIENT_BRANCH]$branchName"
-        Write-Host "##vso[task.setvariable variable=NUGET_CLIENT_SOURCEVERSION]$sourceVersion"
-        Write-Host "##vso[task.setvariable variable=NUGET_CLIENT_NUPKGDIRECTORY]$NupkgDirectory"
-        Write-Host $sourceVersion, $branchName, $buildNumber
-        Write-Host $NupkgDirectory
-  
+        $nupkgsDirectoryPath = "$($Env:DropRoot)\$branchName\$buildNumber\artifacts\VS15\Nupkgs\"
+        $manifestsDirectoryPath = "$($Env:BUILD_ARTIFACTSTAGINGDIRECTORY)\manifests"
+        $manifestFilePath = [System.IO.Path]::Combine($manifestsDirectoryPath, "nuget.client.xml")
+        Write-Host "##vso[task.setvariable variable=NuGetClientRepoUri]$($Env:BUILD_REPOSITORY_URI)"
+        Write-Host "##vso[task.setvariable variable=NuGetClientBuildId]$buildNumber"
+        Write-Host "##vso[task.setvariable variable=NuGetClientBranch]$branchName"
+        Write-Host "##vso[task.setvariable variable=NuGetClientCommit]$sourceVersion"
+        Write-Host "##vso[task.setvariable variable=NuGetClientNupkgsDirectoryPath]$nupkgsDirectoryPath"
+        Write-Host "##vso[task.setvariable variable=ManifestsDirectoryPath]$manifestsDirectoryPath"
+        Write-Host "##vso[task.setvariable variable=ManifestFilePath]$manifestFilePath"
+
   - task: PowerShell@1
     displayName: "Print Environment Variables"
     inputs:
@@ -49,19 +58,40 @@ phases:
       inlineScript: |
         gci env:* | sort-object name
 
+    # Use dotnet msbuild instead of MSBuild CLI.
+    # Using MSBuild CLI results in an assembly binding failure for NuGet.Common.dll 4.4.0.3 because Microsoft.DotNet.Build.Tasks.Feed.dll references SleetLib.dll which references NuGet.Common 4.4.0.3.
+    # The Microsoft.DotNet.Build.Tasks.Feed package includes NuGet.Common 4.9.0.6 and a binding redirection in Microsoft.DotNet.Build.Tasks.Feed.dll.config but the binding redirection is not processed.
+    # This would probably solve it:  https://github.com/Microsoft/msbuild/issues/1309
+  - task: CmdLine@2
+    displayName: "Publish packages to the .NET build asset registry"
+    inputs:
+      script: dotnet msbuild ..\build\publish.proj /t:PublishPackagesToBuildAssetRegistry /p:NuGetClientNupkgsDirectoryPath=$(NuGetClientNupkgsDirectoryPath) /p:FeedUrl=$(FeedUrl) /p:BuildId=$(NuGetClientBuildId) /p:RepoBranch=$(NuGetClientBranch) /p:RepoCommit=$(NuGetClientCommit) /p:RepoUri=$(NuGetClientRepoUri) /p:ManifestFilePath=$(ManifestFilePath) /p:AccountKey=$(dotnetfeed-storage-access-key-1)
+      workingDirectory: cli
+      failOnStderr: true
+    env:
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+      DOTNET_MULTILEVEL_LOOKUP: true
+
+  - task: PowerShell@1
+    displayName: "Upload the manifest file as a build artifact"
+    inputs:
+      scriptType: "inlineScript"
+      inlineScript: |
+        Write-Host "##vso[task.uploadfile]$(ManifestFilePath)"
+
   - task: MSBuild@1
-    displayName: "Publish Artifacts to BlobFeed"
+    displayName: "Publish the manifest to .NET build asset registry"
     inputs:
       solution: 'build\\publish.proj'
       msbuildVersion: 15.0
       configuration: '$(BuildConfiguration)'
-      msbuildArguments: '/p:FeedUrl=$(PB_PublishBlobFeedUrl) /p:FeedApiKey=$(PB_PublishBlobFeedKey) /p:ManifestBranch=$(NUGET_CLIENT_BRANCH) /p:ManifestCommit=$(NUGET_CLIENT_SOURCEVERSION) /p:ManifestBuildId=$(NUGET_CLIENT_BUILD_NUMBER)'
+      msbuildArguments: '/t:PublishManifestToBuildAssetRegistry /p:MaestroApiEndpoint=$(MaestroApiEndpoint) /p:ManifestsDirectoryPath=$(ManifestsDirectoryPath) /p:MaestroAccessToken=$(MaestroAccessToken)'
 
   - task: PowerShell@1
-    displayName: "Add Build Tags"
+    displayName: "Add build tags"
     inputs:
       scriptType: "inlineScript"
       inlineScript: |
-        Write-Host "##vso[build.addbuildtag]$env:NUGET_CLIENT_BUILD_NUMBER"
-        Write-Host "##vso[build.addbuildtag]$env:NUGET_CLIENT_BRANCH"
-        Write-Host "##vso[build.addbuildtag]$env:NUGET_CLIENT_SOURCEVERSION"
+        Write-Host "##vso[build.addbuildtag]$(NuGetClientBuildId)"
+        Write-Host "##vso[build.addbuildtag]$(NuGetClientBranch)"
+        Write-Host "##vso[build.addbuildtag]$(NuGetClientCommit)"
