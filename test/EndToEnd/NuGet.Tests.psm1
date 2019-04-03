@@ -53,6 +53,8 @@ else
 $generatePackagesExePath = $testExtensions[0]
 $testExtensions.RemoveAt(0)
 
+Write-Host "##vso[task.uploadfile]$generatePackagesExePath"
+
 $testExtensions | %{
     if (!(Test-Path $_))
     {
@@ -165,7 +167,7 @@ function Run-Test {
     $testLogFile = Join-Path $testRunOutputPath log.txt
     $testRealTimeResultsFile = Join-Path $testRunOutputPath Realtimeresults.txt
     $debugLogFilePath = Join-Path $testRunOutputPath debuglog.txt
-    $generatePackagesLogFilePath = Join-Path $testRunOutputPath generatepackages.txt
+    $generatePackagesLogFilePath = Join-Path $testRunOutputPath "generatepackages.txt"
 
     # Create the output folder
     mkdir $testRunOutputPath -ErrorAction Ignore | Out-Null
@@ -176,6 +178,8 @@ function Run-Test {
     }
 
     Write-Verbose "Loading scripts from `"$testPath`""
+
+    DebugLog $debugLogFilePath "PowerShell version:  $($PSVersionTable.PSVersion.ToString())"
 
     if (!$File) {
         $File = "*.ps1"
@@ -338,18 +342,16 @@ function Run-Test {
                     Get-ChildItem $repositoryPath\* -Include *.dgml,*.nuspec | %{
                         Write-Host "Running GenerateTestPackages.exe on $($_.FullName) with log $generatePackagesLogFilePath..."
 
-                        $generatePackagesErrorLogFilePath = Join-Path $testRunOutputPath generatepackageserrors.txt
-                        $generatePackagesOutputLogFilePath = Join-Path $testRunOutputPath generatepackagesoutput.txt
+                        $generatePackagesErrorLogFilePath = Join-Path $testRunOutputPath "generatepackageserrors.txt"
+                        $generatePackagesOutputLogFilePath = Join-Path $testRunOutputPath "generatepackagesoutput.txt"
 
                         DebugLog $debugLogFilePath "Loop point 3"
-                        $p = Start-Process $generatePackagesExePath -Wait -WindowStyle Hidden -PassThru -RedirectStandardError $generatePackagesErrorLogFilePath -RedirectStandardOutput $generatePackagesOutputLogFilePath -ArgumentList $_.FullName, $generatePackagesLogFilePath
+                        $p = Start-Process $generatePackagesExePath -Wait -WindowStyle Hidden -PassThru -RedirectStandardError $generatePackagesErrorLogFilePath -RedirectStandardOutput $generatePackagesOutputLogFilePath -ArgumentList "`"$($_.FullName)`" `"$generatePackagesLogFilePath`""
                         DebugLog $debugLogFilePath "Loop point 4"
 
-                        $p.WaitForExit()
+                        $generatePackagesExitCode = $p.ExitCode
 
-                        Start-Sleep 1
-
-                        DebugLog $debugLogFilePath "Exit code:  $($p.ExitCode)"
+                        DebugLog $debugLogFilePath "Exit code:  $generatePackagesExitCode"
 
                         If (Test-Path $generatePackagesOutputLogFilePath)
                         {
@@ -373,9 +375,10 @@ function Run-Test {
 
                         DebugLog $debugLogFilePath "Loop point 6"
 
-                        if(($p.ExitCode -ne 0) -And ($p.ExitCode -ne 7))
+
+
+                        if(($generatePackagesExitCode -ne 0) -And ($generatePackagesExitCode -ne 7))
                         {
-                            $generatePackagesExitCode = $p.ExitCode
                             Write-Host -ForegroundColor Red 'GenerateTestPackages.exe failed. Exit code is ' + $generatePackagesExitCode
                         }
                         else

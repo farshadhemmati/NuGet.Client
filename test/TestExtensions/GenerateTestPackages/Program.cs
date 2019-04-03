@@ -19,7 +19,7 @@ namespace GenerateTestPackages
 
         static Dictionary<string, PackageInfo> _packages = new Dictionary<string, PackageInfo>();
 
-        static void Main(string[] args)
+        static int Main(string[] args)
         {
             try
             {
@@ -54,15 +54,16 @@ namespace GenerateTestPackages
 
                     log.Flush();
                 }
-
-                Environment.ExitCode = 7;
             }
             catch (Exception ex)
             {
+                Console.Error.WriteLine(ex.ToString());
                 Console.WriteLine(ex.ToString());
 
-                Environment.ExitCode = 1;
+                return 1;
             }
+
+            return 7;
         }
 
         private static void Write(string message)
